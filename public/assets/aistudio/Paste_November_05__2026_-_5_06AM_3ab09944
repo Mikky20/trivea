@@ -1,0 +1,986 @@
+<?php
+// file_manager.php
+// A simple web-based file manager and code editor with a VS Code-like interface
+
+// ========== CONFIGURATION ==========
+$root_dir = __DIR__; // Root directory (current directory)
+$allow_create = true; // Allow creating files/folders
+$allow_edit = true;   // Allow editing files
+
+// ========== HELPER FUNCTIONS ==========
+function getSafePath($path, $root) {
+    // Normalize path to prevent directory traversal
+    $realRoot = realpath($root);
+    $realPath = realpath($path);
+    if ($realPath === false) {
+        // If path doesn't exist, resolve parent
+        $parent = dirname($path);
+        $realParent = realpath($parent);
+        if ($realParent === false) return false;
+        $realPath = $realParent . DIRECTORY_SEPARATOR . basename($path);
+    }
+    if (strpos($realPath, $realRoot) !== 0) {
+        return false;
+    }
+    return $realPath;
+}
+
+function listDirectory($dir, $root) {
+    $items = [];
+    if (!is_dir($dir)) return $items;
+    $files = scandir($dir);
+    foreach ($files as $file) {
+        if ($file === '.' || $file === '..') continue;
+        $fullPath = $dir . DIRECTORY_SEPARATOR . $file;
+        $relPath = ltrim(str_replace($root, '', $fullPath), DIRECTORY_SEPARATOR);
+        $items[] = [
+            'name' => $file,
+            'path' => $relPath,
+            'type' => is_dir($fullPath) ? 'dir' : 'file',
+            'size' => is_file($fullPath) ? filesize($fullPath) : 0,
+            'modified' => filemtime($fullPath)
+        ];
+    }
+    // Sort: directories first, then files
+    usort($items, function($a, $b) {
+        if ($a['type'] !== $b['type']) {
+            return $a['type'] === 'dir' ? -1 : 1;
+        }
+        return strcasecmp($a['name'], $b['name']);
+    });
+    return $items;
+}
+
+function getFileContent($filePath) {
+    if (!is_file($filePath)) return '';
+    $content = file_get_contents($filePath);
+    return $content !== false ? $content : '';
+}
+
+function saveFileContent($filePath, $content) {
+    return file_put_contents($filePath, $content) !== false;
+}
+
+function createFolder($path) {
+    return mkdir($path, 0777, true);
+}
+
+function createFile($path) {
+    return file_put_contents($path, '') !== false;
+}
+
+// ========== AJAX HANDLING ==========
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    header('Content-Type: application/json');
+    $response = ['success' => false, 'message' => '', 'data' => null];
+
+    $action = $_POST['action'];
+    $currentPath = isset($_POST['path']) ? $_POST['path'] : '';
+    $fullPath = getSafePath($root_dir . DIRECTORY_SEPARATOR . $currentPath, $root_dir);
+
+    if ($fullPath === false) {
+        $response['message'] = 'Invalid path.';
+        echo json_encode($response);
+        exit;
+    }
+
+    switch ($action) {
+        case 'list':
+            $dir = is_dir($fullPath) ? $fullPath : dirname($fullPath);
+            $response['success'] = true;
+            $response['data'] = [
+                'items' => listDirectory($dir, $root_dir),
+                'current' => str_replace($root_dir, '', $dir)
+            ];
+            break;
+
+        case 'read':
+            if (is_file($fullPath)) {
+                $content = getFileContent($fullPath);
+                $response['success'] = true;
+                $response['data'] = ['content' => $content, 'path' => $currentPath];
+            } else {
+                $response['message'] = 'File not found.';
+            }
+            break;
+
+        case 'save':
+            if (!$allow_edit) {
+                $response['message'] = 'Editing is disabled.';
+                break;
+            }
+            if (is_file($fullPath)) {
+                $content = isset($_POST['content']) ? $_POST['content'] : '';
+                if (saveFileContent($fullPath, $content)) {
+                    $response['success'] = true;
+                    $response['message'] = 'File saved successfully.';
+                } else {
+                    $response['message'] = 'Failed to save file.';
+                }
+            } else {
+                $response['message'] = 'File not found.';
+            }
+            break;
+
+        case 'create_folder':
+            if (!$allow_create) {
+                $response['message'] = 'Creating is disabled.';
+                break;
+            }
+            $name = isset($_POST['name']) ? trim($_POST['name']) : '';
+            if (empty($name)) {
+                $response['message'] = 'Folder name is required.';
+                break;
+            }
+            $newPath = $fullPath . DIRECTORY_SEPARATOR . $name;
+            if (file_exists($newPath)) {
+                $response['message'] = 'Folder already exists.';
+                break;
+            }
+            if (createFolder($newPath)) {
+                $response['success'] = true;
+                $response['message'] = 'Folder created.';
+            } else {
+                $response['message'] = 'Failed to create folder.';
+            }
+            break;
+
+        case 'create_file':
+            if (!$allow_create) {
+                $response['message'] = 'Creating is disabled.';
+                break;
+            }
+            $name = isset($_POST['name']) ? trim($_POST['name']) : '';
+            if (empty($name)) {
+                $response['message'] = 'File name is required.';
+                break;
+            }
+            $newPath = $fullPath . DIRECTORY_SEPARATOR . $name;
+            if (file_exists($newPath)) {
+                $response['message'] = 'File already exists.';
+                break;
+            }
+            if (createFile($newPath)) {
+                $response['success'] = true;
+                $response['message'] = 'File created.';
+            } else {
+                $response['message'] = 'Failed to create file.';
+            }
+            break;
+
+        case 'delete':
+            if (!$allow_create) {
+                $response['message'] = 'Deleting is disabled.';
+                break;
+            }
+            if (file_exists($fullPath)) {
+                if (is_dir($fullPath)) {
+                    // Recursively delete directory
+                    $iterator = new RecursiveIteratorIterator(
+                        new RecursiveDirectoryIterator($fullPath, RecursiveDirectoryIterator::SKIP_DOTS),
+                        RecursiveIteratorIterator::CHILD_FIRST
+                    );
+                    $success = true;
+                    foreach ($iterator as $file) {
+                        if ($file->isDir()) {
+                            $success = $success && rmdir($file->getPathname());
+                        } else {
+                            $success = $success && unlink($file->getPathname());
+                        }
+                    }
+                    $success = $success && rmdir($fullPath);
+                } else {
+                    $success = unlink($fullPath);
+                }
+                if ($success) {
+                    $response['success'] = true;
+                    $response['message'] = 'Deleted successfully.';
+                } else {
+                    $response['message'] = 'Failed to delete.';
+                }
+            } else {
+                $response['message'] = 'Item not found.';
+            }
+            break;
+
+        default:
+            $response['message'] = 'Unknown action.';
+    }
+
+    echo json_encode($response);
+    exit;
+}
+
+// ========== INITIAL PAGE LOAD ==========
+$initialItems = listDirectory($root_dir, $root_dir);
+$initialPath = '';
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PHP File Manager & Editor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .toolbar {
+            background: #333;
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            border-bottom: 1px solid #555;
+            flex-shrink: 0;
+            flex-wrap: wrap;
+        }
+        .toolbar button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .toolbar button:hover {
+            background: #1177bb;
+        }
+        .toolbar button:disabled {
+            background: #555;
+            cursor: default;
+            opacity: 0.6;
+        }
+        .toolbar .breadcrumb {
+            font-size: 13px;
+            color: #aaa;
+            background: #252526;
+            padding: 5px 10px;
+            border-radius: 3px;
+            flex-grow: 1;
+            min-width: 200px;
+        }
+        .toolbar .breadcrumb span {
+            cursor: pointer;
+            color: #4ec9b0;
+        }
+        .toolbar .breadcrumb span:hover {
+            text-decoration: underline;
+        }
+        .toolbar .breadcrumb .sep {
+            color: #666;
+            cursor: default;
+            margin: 0 2px;
+        }
+        .main-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        .sidebar {
+            width: 280px;
+            min-width: 200px;
+            background: #252526;
+            border-right: 1px solid #444;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+        .sidebar .file-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 4px 0;
+        }
+        .sidebar .file-item {
+            display: flex;
+            align-items: center;
+            padding: 5px 12px;
+            cursor: pointer;
+            font-size: 14px;
+            user-select: none;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .sidebar .file-item:hover {
+            background: #2a2d2e;
+        }
+        .sidebar .file-item.selected {
+            background: #094771;
+        }
+        .sidebar .file-item .icon {
+            margin-right: 8px;
+            font-size: 16px;
+            width: 20px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        .sidebar .file-item .name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .sidebar .file-item .actions {
+            margin-left: auto;
+            display: none;
+            gap: 4px;
+        }
+        .sidebar .file-item:hover .actions {
+            display: flex;
+        }
+        .sidebar .file-item .actions button {
+            background: transparent;
+            border: none;
+            color: #aaa;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0 3px;
+            border-radius: 2px;
+        }
+        .sidebar .file-item .actions button:hover {
+            color: #fff;
+            background: #555;
+        }
+        .sidebar .file-item .actions button.delete-btn:hover {
+            color: #f44;
+        }
+        .editor-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: #1e1e1e;
+        }
+        .editor-header {
+            background: #2d2d2d;
+            padding: 6px 16px;
+            font-size: 13px;
+            color: #aaa;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            border-bottom: 1px solid #444;
+            flex-shrink: 0;
+            min-height: 36px;
+        }
+        .editor-header .filename {
+            color: #e0e0e0;
+            font-weight: 500;
+        }
+        .editor-header .dirty-indicator {
+            color: #e8a800;
+            font-size: 16px;
+            display: none;
+        }
+        .editor-header .dirty-indicator.visible {
+            display: inline;
+        }
+        .editor-header .save-btn {
+            margin-left: auto;
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 4px 14px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .editor-header .save-btn:hover {
+            background: #1177bb;
+        }
+        .editor-header .save-btn:disabled {
+            background: #555;
+            cursor: default;
+            opacity: 0.6;
+        }
+        .editor-content {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
+        .editor-content textarea {
+            width: 100%;
+            height: 100%;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border: none;
+            outline: none;
+            padding: 12px 16px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            resize: none;
+            tab-size: 4;
+            white-space: pre;
+            overflow: auto;
+        }
+        .editor-content textarea::placeholder {
+            color: #666;
+        }
+        .empty-editor {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #666;
+            font-size: 16px;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .empty-editor .big-icon {
+            font-size: 64px;
+            opacity: 0.3;
+        }
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 12px 20px;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 14px;
+            z-index: 9999;
+            animation: slideIn 0.3s ease;
+            max-width: 400px;
+        }
+        .toast.success { background: #2e7d32; }
+        .toast.error { background: #c62828; }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal {
+            background: #2d2d2d;
+            border: 1px solid #555;
+            border-radius: 6px;
+            padding: 24px;
+            min-width: 360px;
+            max-width: 480px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+        .modal h3 {
+            margin-bottom: 16px;
+            color: #e0e0e0;
+            font-size: 16px;
+        }
+        .modal input {
+            width: 100%;
+            padding: 8px 12px;
+            background: #1e1e1e;
+            border: 1px solid #555;
+            border-radius: 3px;
+            color: #d4d4d4;
+            font-size: 14px;
+            outline: none;
+            margin-bottom: 16px;
+        }
+        .modal input:focus {
+            border-color: #0e639c;
+        }
+        .modal .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+        .modal .modal-actions button {
+            padding: 6px 16px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .modal .modal-actions .btn-cancel {
+            background: #555;
+            color: #ddd;
+        }
+        .modal .modal-actions .btn-cancel:hover {
+            background: #666;
+        }
+        .modal .modal-actions .btn-ok {
+            background: #0e639c;
+            color: white;
+        }
+        .modal .modal-actions .btn-ok:hover {
+            background: #1177bb;
+        }
+        .sidebar .empty-folder {
+            padding: 20px 12px;
+            color: #666;
+            font-size: 13px;
+            text-align: center;
+        }
+        /* Scrollbar styling */
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-track { background: #1e1e1e; }
+        ::-webkit-scrollbar-thumb { background: #555; border-radius: 5px; }
+        ::-webkit-scrollbar-thumb:hover { background: #777; }
+    </style>
+</head>
+<body>
+
+<div class="toolbar">
+    <button id="btnNewFile" title="Create a new file">+ File</button>
+    <button id="btnNewFolder" title="Create a new folder">+ Folder</button>
+    <button id="btnRefresh" title="Refresh directory listing">⟳ Refresh</button>
+    <div class="breadcrumb" id="breadcrumb">
+        <span data-path="">root</span>
+    </div>
+</div>
+
+<div class="main-container">
+    <div class="sidebar">
+        <div class="file-list" id="fileList">
+            <?php foreach ($initialItems as $item): ?>
+                <div class="file-item" data-path="<?= htmlspecialchars($item['path']) ?>" data-type="<?= $item['type'] ?>">
+                    <span class="icon"><?= $item['type'] === 'dir' ? '📁' : '📄' ?></span>
+                    <span class="name"><?= htmlspecialchars($item['name']) ?></span>
+                    <span class="actions">
+                        <?php if ($item['type'] === 'file'): ?>
+                            <button class="edit-btn" title="Edit">✏️</button>
+                        <?php endif; ?>
+                        <button class="delete-btn" title="Delete">🗑️</button>
+                    </span>
+                </div>
+            <?php endforeach; ?>
+            <?php if (empty($initialItems)): ?>
+                <div class="empty-folder">Empty folder</div>
+            <?php endif; ?>
+        </div>
+    </div>
+
+    <div class="editor-area">
+        <div class="editor-header">
+            <span class="filename" id="editorFilename">No file open</span>
+            <span class="dirty-indicator" id="dirtyIndicator">●</span>
+            <button class="save-btn" id="btnSave" disabled>Save</button>
+        </div>
+        <div class="editor-content" id="editorContent">
+            <div class="empty-editor">
+                <div class="big-icon">📝</div>
+                <div>Select a file to edit</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    // ========== STATE ==========
+    let currentPath = '';          // Current directory path (relative to root)
+    let currentFile = null;        // Current file path (relative to root)
+    let currentFileContent = '';   // Original content of the open file
+    let isDirty = false;
+    let openFilePath = null;       // Path of the open file
+
+    // ========== DOM REFERENCES ==========
+    const fileListEl = document.getElementById('fileList');
+    const breadcrumbEl = document.getElementById('breadcrumb');
+    const editorFilename = document.getElementById('editorFilename');
+    const editorContent = document.getElementById('editorContent');
+    const btnSave = document.getElementById('btnSave');
+    const btnNewFile = document.getElementById('btnNewFile');
+    const btnNewFolder = document.getElementById('btnNewFolder');
+    const btnRefresh = document.getElementById('btnRefresh');
+    const dirtyIndicator = document.getElementById('dirtyIndicator');
+
+    // ========== UTILITY FUNCTIONS ==========
+    function showToast(message, type) {
+        const toast = document.createElement('div');
+        toast.className = 'toast ' + (type || 'success');
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transition = 'opacity 0.3s';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+    function apiPost(action, data) {
+        return fetch(window.location.href, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams(Object.assign({ action: action }, data))
+        }).then(r => r.json());
+    }
+
+    function setDirty(dirty) {
+        isDirty = dirty;
+        dirtyIndicator.classList.toggle('visible', dirty);
+        btnSave.disabled = !openFilePath;
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    // ========== RENDERING ==========
+    function renderFileList(items, currentDir) {
+        fileListEl.innerHTML = '';
+        if (!items || items.length === 0) {
+            fileListEl.innerHTML = '<div class="empty-folder">Empty folder</div>';
+            return;
+        }
+        items.forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'file-item';
+            div.dataset.path = item.path;
+            div.dataset.type = item.type;
+
+            const icon = document.createElement('span');
+            icon.className = 'icon';
+            icon.textContent = item.type === 'dir' ? '📁' : '📄';
+
+            const name = document.createElement('span');
+            name.className = 'name';
+            name.textContent = item.name;
+
+            const actions = document.createElement('span');
+            actions.className = 'actions';
+
+            if (item.type === 'file') {
+                const editBtn = document.createElement('button');
+                editBtn.className = 'edit-btn';
+                editBtn.title = 'Edit';
+                editBtn.textContent = '✏️';
+                editBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    openFile(item.path);
+                });
+                actions.appendChild(editBtn);
+            }
+
+            const delBtn = document.createElement('button');
+            delBtn.className = 'delete-btn';
+            delBtn.title = 'Delete';
+            delBtn.textContent = '🗑️';
+            delBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                confirmDelete(item.path, item.name);
+            });
+            actions.appendChild(delBtn);
+
+            div.appendChild(icon);
+            div.appendChild(name);
+            div.appendChild(actions);
+
+            div.addEventListener('click', () => {
+                if (item.type === 'dir') {
+                    navigateTo(item.path);
+                } else {
+                    openFile(item.path);
+                }
+            });
+
+            fileListEl.appendChild(div);
+        });
+    }
+
+    function renderBreadcrumb(currentDir) {
+        breadcrumbEl.innerHTML = '';
+        const rootSpan = document.createElement('span');
+        rootSpan.textContent = 'root';
+        rootSpan.dataset.path = '';
+        rootSpan.addEventListener('click', () => navigateTo(''));
+        breadcrumbEl.appendChild(rootSpan);
+
+        if (currentDir && currentDir !== '') {
+            const parts = currentDir.split('/').filter(p => p);
+            let accumulated = '';
+            parts.forEach((part, idx) => {
+                const sep = document.createElement('span');
+                sep.className = 'sep';
+                sep.textContent = ' / ';
+                breadcrumbEl.appendChild(sep);
+
+                accumulated += (accumulated ? '/' : '') + part;
+                const span = document.createElement('span');
+                span.textContent = part;
+                span.dataset.path = accumulated;
+                span.addEventListener('click', () => navigateTo(accumulated));
+                breadcrumbEl.appendChild(span);
+            });
+        }
+    }
+
+    // ========== NAVIGATION ==========
+    function navigateTo(path) {
+        if (isDirty) {
+            if (!confirm('You have unsaved changes. Discard and navigate away?')) {
+                return;
+            }
+        }
+        currentPath = path || '';
+        apiPost('list', { path: currentPath }).then(res => {
+            if (res.success) {
+                renderFileList(res.data.items, res.data.current);
+                renderBreadcrumb(res.data.current);
+                currentPath = res.data.current.replace(/\\/g, '/');
+                if (currentPath.startsWith('/')) currentPath = currentPath.slice(1);
+                // Reset editor
+                closeEditor();
+            } else {
+                showToast(res.message || 'Failed to list directory.', 'error');
+            }
+        }).catch(() => {
+            showToast('Network error.', 'error');
+        });
+    }
+
+    // ========== FILE OPERATIONS ==========
+    function openFile(filePath) {
+        if (isDirty && openFilePath !== filePath) {
+            if (!confirm('You have unsaved changes. Discard and open another file?')) {
+                return;
+            }
+        }
+        apiPost('read', { path: filePath }).then(res => {
+            if (res.success) {
+                openFilePath = filePath;
+                currentFileContent = res.data.content;
+                editorFilename.textContent = filePath;
+                editorContent.innerHTML = '';
+                const textarea = document.createElement('textarea');
+                textarea.value = res.data.content;
+                textarea.placeholder = 'Start typing...';
+                textarea.spellcheck = false;
+                textarea.addEventListener('input', () => {
+                    const changed = textarea.value !== currentFileContent;
+                    setDirty(changed);
+                });
+                // Tab key inserts spaces
+                textarea.addEventListener('keydown', (e) => {
+                    if (e.key === 'Tab') {
+                        e.preventDefault();
+                        const start = textarea.selectionStart;
+                        const end = textarea.selectionEnd;
+                        const value = textarea.value;
+                        textarea.value = value.substring(0, start) + '    ' + value.substring(end);
+                        textarea.selectionStart = textarea.selectionEnd = start + 4;
+                        textarea.dispatchEvent(new Event('input'));
+                    }
+                    // Ctrl+S save
+                    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                        e.preventDefault();
+                        saveCurrentFile();
+                    }
+                });
+                editorContent.appendChild(textarea);
+                setDirty(false);
+                btnSave.disabled = false;
+                textarea.focus();
+            } else {
+                showToast(res.message || 'Failed to read file.', 'error');
+            }
+        }).catch(() => {
+            showToast('Network error.', 'error');
+        });
+    }
+
+    function saveCurrentFile() {
+        if (!openFilePath) return;
+        const textarea = editorContent.querySelector('textarea');
+        if (!textarea) return;
+        const content = textarea.value;
+        apiPost('save', { path: openFilePath, content: content }).then(res => {
+            if (res.success) {
+                currentFileContent = content;
+                setDirty(false);
+                showToast('File saved successfully.', 'success');
+                // Refresh file listing (sizes may have changed)
+                refreshFileList();
+            } else {
+                showToast(res.message || 'Failed to save file.', 'error');
+            }
+        }).catch(() => {
+            showToast('Network error.', 'error');
+        });
+    }
+
+    function closeEditor() {
+        openFilePath = null;
+        currentFileContent = '';
+        editorFilename.textContent = 'No file open';
+        editorContent.innerHTML = '<div class="empty-editor"><div class="big-icon">📝</div><div>Select a file to edit</div></div>';
+        setDirty(false);
+        btnSave.disabled = true;
+    }
+
+    function confirmDelete(path, name) {
+        if (!confirm('Are you sure you want to delete "' + name + '"? This cannot be undone.')) {
+            return;
+        }
+        apiPost('delete', { path: path }).then(res => {
+            if (res.success) {
+                showToast('Deleted successfully.', 'success');
+                // If deleted file is currently open, close editor
+                if (openFilePath === path) {
+                    closeEditor();
+                }
+                refreshFileList();
+            } else {
+                showToast(res.message || 'Failed to delete.', 'error');
+            }
+        }).catch(() => {
+            showToast('Network error.', 'error');
+        });
+    }
+
+    function refreshFileList() {
+        apiPost('list', { path: currentPath }).then(res => {
+            if (res.success) {
+                renderFileList(res.data.items, res.data.current);
+                renderBreadcrumb(res.data.current);
+                currentPath = res.data.current.replace(/\\/g, '/');
+                if (currentPath.startsWith('/')) currentPath = currentPath.slice(1);
+            }
+        }).catch(() => {});
+    }
+
+    // ========== MODALS ==========
+    function showCreateModal(type) {
+        return new Promise((resolve) => {
+            const overlay = document.createElement('div');
+            overlay.className = 'modal-overlay';
+            overlay.innerHTML = `
+                <div class="modal">
+                    <h3>Create New ${type === 'file' ? 'File' : 'Folder'}</h3>
+                    <input type="text" id="modalInput" placeholder="Enter ${type === 'file' ? 'file' : 'folder'} name..." />
+                    <div class="modal-actions">
+                        <button class="btn-cancel">Cancel</button>
+                        <button class="btn-ok">Create</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+            const input = overlay.querySelector('#modalInput');
+            input.focus();
+
+            function cleanup() { overlay.remove(); }
+
+            overlay.querySelector('.btn-cancel').addEventListener('click', () => {
+                cleanup(); resolve(null);
+            });
+            overlay.querySelector('.btn-ok').addEventListener('click', () => {
+                const val = input.value.trim();
+                if (val) {
+                    cleanup(); resolve(val);
+                } else {
+                    input.style.borderColor = '#f44';
+                }
+            });
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    const val = input.value.trim();
+                    if (val) { cleanup(); resolve(val); }
+                }
+                if (e.key === 'Escape') {
+                    cleanup(); resolve(null);
+                }
+            });
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) { cleanup(); resolve(null); }
+            });
+        });
+    }
+
+    // ========== EVENT LISTENERS ==========
+    btnNewFile.addEventListener('click', () => {
+        showCreateModal('file').then(name => {
+            if (!name) return;
+            apiPost('create_file', { path: currentPath, name: name }).then(res => {
+                if (res.success) {
+                    showToast('File created.', 'success');
+                    refreshFileList();
+                } else {
+                    showToast(res.message || 'Failed to create file.', 'error');
+                }
+            }).catch(() => showToast('Network error.', 'error'));
+        });
+    });
+
+    btnNewFolder.addEventListener('click', () => {
+        showCreateModal('folder').then(name => {
+            if (!name) return;
+            apiPost('create_folder', { path: currentPath, name: name }).then(res => {
+                if (res.success) {
+                    showToast('Folder created.', 'success');
+                    refreshFileList();
+                } else {
+                    showToast(res.message || 'Failed to create folder.', 'error');
+                }
+            }).catch(() => showToast('Network error.', 'error'));
+        });
+    });
+
+    btnRefresh.addEventListener('click', refreshFileList);
+
+    btnSave.addEventListener('click', saveCurrentFile);
+
+    // Warn before leaving with unsaved changes
+    window.addEventListener('beforeunload', (e) => {
+        if (isDirty) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    });
+
+    // ========== INITIALIZATION ==========
+    // Set initial breadcrumb from PHP-rendered state
+    (function init() {
+        const items = fileListEl.querySelectorAll('.file-item');
+        // Attach click handlers to PHP-rendered items
+        items.forEach(item => {
+            const path = item.dataset.path;
+            const type = item.dataset.type;
+            item.addEventListener('click', () => {
+                if (type === 'dir') navigateTo(path);
+                else openFile(path);
+            });
+            const editBtn = item.querySelector('.edit-btn');
+            if (editBtn) {
+                editBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    openFile(path);
+                });
+            }
+            const delBtn = item.querySelector('.delete-btn');
+            if (delBtn) {
+                delBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const nameEl = item.querySelector('.name');
+                    confirmDelete(path, nameEl ? nameEl.textContent : path);
+                });
+            }
+        });
+    })();
+
+})();
+</script>
+</body>
+</html>
