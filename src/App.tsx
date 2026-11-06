@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import confetti from 'canvas-confetti';
-import { Flame, Trophy, Clock, ArrowRight, Home } from 'lucide-react';
+import { Flame, Trophy, Clock, ArrowRight, LogOut, Lock } from 'lucide-react';
 
 type RegistrationForm = {
   firstName: string;
@@ -510,11 +510,15 @@ function Quiz() {
 
   const q = questions[currentIdx];
 
-  const handleAnswer = (option: string) => {
-    if (isAnswerRevealed) return; // Prevent double clicks on options once chosen
-
-    const isCorrect = option === q.answer;
+  const handleSelectOption = (option: string) => {
+    if (isAnswerRevealed) return; // Answer is already locked in
     setSelectedOption(option);
+  };
+
+  const handleLockAnswer = () => {
+    if (isAnswerRevealed || !selectedOption || !q) return;
+
+    const isCorrect = selectedOption === q.answer;
     setIsAnswerRevealed(true);
 
     if (isCorrect) {
@@ -637,18 +641,18 @@ function Quiz() {
         </div>
       )}
 
-      {/* Top Header Bar: Home Button, Question Tracker, Circular Progress, Question Streak, Score & Timer */}
+      {/* Top Header Bar: Exit Button, Question Tracker, Circular Progress, Question Streak, Score & Timer */}
       <div className="w-full max-w-2xl bg-blue-900/60 border border-blue-600/40 rounded-2xl p-3 sm:p-4 mb-6 flex items-center justify-between shadow-[0_0_25px_rgba(30,58,138,0.4)] backdrop-blur-sm gap-2">
         
-        {/* Left: Home Button & Question Tracker */}
+        {/* Left: Exit to Login Button & Question Tracker */}
         <div className="flex items-center gap-2 sm:gap-3">
           <button
-            onClick={() => navigate('/')}
-            title="Return to Home (Progress saved)"
-            className="p-2 sm:px-3 sm:py-1.5 bg-blue-950/90 hover:bg-blue-800 border border-blue-500/60 hover:border-amber-400/80 rounded-xl text-blue-200 hover:text-white transition-all shadow-[0_0_10px_rgba(30,58,138,0.5)] active:scale-95 flex items-center gap-1.5 cursor-pointer text-xs font-bold uppercase tracking-wider"
+            onClick={() => navigate('/auth')}
+            title="Exit to Login Page (Progress saved)"
+            className="p-2 sm:px-3 sm:py-1.5 bg-blue-950/90 hover:bg-rose-950/80 border border-blue-500/60 hover:border-rose-400/80 rounded-xl text-blue-200 hover:text-white transition-all shadow-[0_0_10px_rgba(30,58,138,0.5)] active:scale-95 flex items-center gap-1.5 cursor-pointer text-xs font-bold uppercase tracking-wider"
           >
-            <Home className="w-4 h-4 text-amber-400" />
-            <span className="hidden sm:inline">Home</span>
+            <LogOut className="w-4 h-4 text-rose-400" />
+            <span className="hidden sm:inline">Exit</span>
           </button>
 
           <div className="flex flex-col">
@@ -751,7 +755,7 @@ function Quiz() {
           
           <div className="grid gap-3.5">
             {q.options.map((option: string) => {
-              let btnStyle = "bg-blue-950 border-blue-600 hover:bg-blue-800 text-white";
+              let btnStyle = "bg-blue-950 border-blue-600 hover:bg-blue-900/70 text-white";
 
               if (isAnswerRevealed) {
                 if (option === q.answer) {
@@ -763,16 +767,41 @@ function Quiz() {
                 } else {
                   btnStyle = "bg-blue-950/40 border-blue-900/40 text-blue-300/40 opacity-40 cursor-not-allowed";
                 }
+              } else if (selectedOption === option) {
+                // Selected state before locking: highlighted in blue/amber with glowing ring
+                btnStyle = "bg-blue-800/90 border-amber-400 ring-2 ring-amber-400 text-white font-bold shadow-[0_0_20px_rgba(245,158,11,0.35)] scale-[1.01]";
               }
 
               return (
                 <button
                   key={option}
                   disabled={isAnswerRevealed}
-                  onClick={() => handleAnswer(option)}
-                  className={`p-4 border rounded-xl text-left transition-all duration-200 font-medium text-lg flex items-center justify-between ${btnStyle}`}
+                  onClick={() => handleSelectOption(option)}
+                  className={`p-4 border rounded-xl text-left transition-all duration-200 font-medium text-lg flex items-center justify-between cursor-pointer ${btnStyle}`}
                 >
-                  <span>{option}</span>
+                  <div className="flex items-center gap-3">
+                    <span className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border transition-colors ${
+                      isAnswerRevealed
+                        ? option === q.answer
+                          ? 'bg-emerald-500 border-white text-white'
+                          : selectedOption === option
+                          ? 'bg-rose-500 border-white text-white'
+                          : 'border-blue-700/60 text-blue-400/40'
+                        : selectedOption === option
+                        ? 'bg-amber-400 border-amber-300 text-gray-950 font-black'
+                        : 'border-blue-500/60 text-blue-300'
+                    }`}>
+                      {isAnswerRevealed && option === q.answer ? '✓' : isAnswerRevealed && selectedOption === option ? '✗' : selectedOption === option ? '●' : '○'}
+                    </span>
+                    <span>{option}</span>
+                  </div>
+
+                  {/* Badges */}
+                  {!isAnswerRevealed && selectedOption === option && (
+                    <span className="bg-amber-500 text-gray-950 text-xs px-2.5 py-1 rounded-full uppercase tracking-wider font-extrabold shadow animate-pulse">
+                      Selected
+                    </span>
+                  )}
                   {isAnswerRevealed && option === q.answer && (
                     <span className="bg-emerald-500 text-white text-xs px-2.5 py-1 rounded-full uppercase tracking-wider font-bold shadow">
                       ✓ Correct Answer
@@ -787,6 +816,29 @@ function Quiz() {
               );
             })}
           </div>
+
+          {/* Action Row: Lock Answer Button (when unrevealed) or Instruction */}
+          {!isAnswerRevealed && (
+            <div className="mt-6 pt-4 border-t border-blue-700/50 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <span className="text-xs sm:text-sm text-blue-200/90 font-medium text-center sm:text-left">
+                {selectedOption 
+                  ? "Tap another option to switch, or confirm your choice:" 
+                  : "Select an option above, then tap Lock Answer"}
+              </span>
+              <button
+                disabled={!selectedOption}
+                onClick={handleLockAnswer}
+                className={`w-full sm:w-auto font-black text-lg uppercase tracking-wider px-8 py-3.5 rounded-xl shadow-lg transition-all duration-150 flex items-center justify-center gap-2 ${
+                  selectedOption
+                    ? 'bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-300 text-gray-950 shadow-[0_0_25px_rgba(245,158,11,0.5)] active:scale-95 cursor-pointer animate-pulse'
+                    : 'bg-blue-950/60 border border-blue-700/40 text-blue-400/40 cursor-not-allowed'
+                }`}
+              >
+                <Lock className="w-5 h-5" />
+                <span>Lock Answer</span>
+              </button>
+            </div>
+          )}
 
           {isAnswerRevealed && q.reference && (
             <div className="mt-4 pt-3 border-t border-blue-800/60 text-sm text-blue-200/90 flex items-center gap-2">
